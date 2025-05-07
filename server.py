@@ -2,36 +2,43 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 from flask_sqlalchemy import SQLAlchemy
-from sqlalchemy.sql import text  # Allows executing raw SQL queries
+from sqlalchemy.sql import text
+import re
 
 app = Flask(__name__)
 CORS(app)
 
-# 🛠️ Secret Key for JWT
-app.config["JWT_SECRET_KEY"] = "supersecret"  # 🔴 Weak key, vulnerable!
+# Secret Key for JWT
+app.config["JWT_SECRET_KEY"] = "supersecret"
 jwt = JWTManager(app)
 
-# 🛠️ Database Config
+# Database Config
 app.config["SQLALCHEMY_DATABASE_URI"] = "postgresql://vuln_user:vuln_password@localhost/vulnerable_db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 db = SQLAlchemy(app)
 
-# 🛠️ User Model (Still No Hashing for Vulnerability)
+# User Model (Still No Hashing for Vulnerability)
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password = db.Column(db.String(128), nullable=False)
 
-# 🛠️ Vulnerable Registration Endpoint
+# Vulnerable Registration Endpoint
 @app.route("/register", methods=["POST"])
 def register():
     data = request.json
-    new_user = User(username=data["username"], password=data["password"])  # No password hashing!
+    username = data.get("username", "")
+    password = data.get("password", "")
+
+    if not re.fullmatch(r"[^@]+@[^@]+\.[^@]+", username):
+        return jsonify({"error": "Username must be a valid email address."}), 400
+
+    new_user = User(username=username, password=password)
     db.session.add(new_user)
     db.session.commit()
     return jsonify({"message": "User registered"}), 201
 
-# 🛠️ **Vulnerable Login with SQL Injection**
+# Vulnerable Login with SQL Injection
 @app.route("/login", methods=["POST"])
 def login():
     data = request.json
@@ -42,7 +49,7 @@ def login():
     user = db.session.execute(query, {"username": username, "password": password}).fetchone()
 
     if user:
-        user_id, user_name = user  # Unpack user tuple
+        user_id, user_name = user
         access_token = create_access_token(identity=user_name)
         return jsonify({
             "message": "Logged in successfully",
@@ -50,14 +57,18 @@ def login():
             "user": {"id": user_id, "username": user_name}
         }), 200
 
-    # **Username Enumeration via Verbose Error**
-    check_user = db.session.execute(text("SELECT username FROM \"user\" WHERE username = :username"), {"username": username}).fetchone()
-    if check_user:
-        return jsonify({"error": "Invalid password"}), 401  # ✅ This leaks that the username exists!
-    
-    return jsonify({"error": "Username does not exist"}), 401  # ✅ This leaks username is invalid!
+    # Username Enumeration via Verbose Error
+    check_user = db.session.execute(
+        text("SELECT username FROM \"user\" WHERE username = :username"),
+        {"username": username}
+    ).fetchone()
 
-# 🛠️ **Forgot Password Feature (Username Enumeration)**
+    if check_user:
+        return jsonify({"error": "Invalid password"}), 401
+
+    return jsonify({"error": "Username does not exist"}), 401
+
+# Forgot Password Feature (Username Enumeration)
 @app.route("/forgot-password", methods=["POST"])
 def forgot_password():
     data = request.json
@@ -71,8 +82,7 @@ def forgot_password():
     else:
         return jsonify({"error": "Username not found!"}), 404
 
-
-# 🛠️ **Protected Dashboard Route (Requires Token)**
+# Protected Dashboard Route (Requires Token)
 @app.route("/dashboard", methods=["GET"])
 @jwt_required()
 def dashboard():
@@ -81,3 +91,4 @@ def dashboard():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
